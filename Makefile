@@ -34,6 +34,10 @@ run: all
 	@echo server started
 	@$(OUT_O_DIR)/proxy
 
+.PHONY: debug
+debug: clean all
+	@gdb -silent $(OUT_O_DIR)/proxy
+
 .PHONY: clean
 clean:
 	rm -rf $(OUT_O_DIR) *.x
