@@ -79,7 +79,6 @@ size_t gethttpline(const int sockfd, char *s, size_t n)
     return 0;
 
   size_t i;
-  char *c = s;
   for (i = 0; i < n - 1 && recv(sockfd, s, 1, 0) > 0 && *s != '\r'; i++)
     s++;
   if (*s == '\r')
@@ -92,6 +91,5 @@ size_t gethttpline(const int sockfd, char *s, size_t n)
   }
   *s = '\0';
 
-  fputs(c, stdout);
   return i;
 }

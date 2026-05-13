@@ -13,13 +13,17 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <poll.h>
+#include <signal.h>
+#include <sys/wait.h>
 #include "proxy.h"
-#include "pollfd_set.h"
 #include "panic.h"
 #include "utils.h"
 
 #define PORT "8888"
 #define BACKLOG 10
+
+static int set_nonblock(int fd);
+static void sigchild_handler(int s);
 
 int main(void)
 {
@@ -41,28 +45,16 @@ int main(void)
     panic(PANIC_EXIT | PANIC_PERROR, 1, "listen");
   freeaddrinfo(serverinfo);
   
-  struct pollfd_set master = fd_init;
-
-  if (fd_add(&master, sockfd, POLLIN, 0) == NULL)
-    panic(PANIC_EXIT, 1, "memory error\n");
   for (;;) {
-    if (poll(master.data, master.len, -1) == -1)
-      panic(PANIC_PERROR | PANIC_EXIT, 1, "poll");
-    for (size_t i = 0; i < master.len; i++) {
-      if (!(master.data[i].revents & POLLIN))
-        continue;
-      if (master.data[i].fd == sockfd) {
-        const int clientfd = accept_client(sockfd);
-        if (clientfd == -1 || fd_add(&master, clientfd, POLLIN | POLLOUT, 0) == NULL) {
-          fprintf(stderr, "Failed to add socket %d. Disconnecting client.\n", clientfd);
-          close(clientfd);
-        }
-      } else {
-        handle_new_client(master.data[i].fd);
-        return 0;
-      }
-    }
+    const int clientfd = accept_client(sockfd);
     
+    if (clientfd == -1)
+      continue;
+    if (fork() == 0) {
+      handle_new_client(clientfd);
+      return 0;
+    }
+    close(clientfd);
   }
 
   return 0;
@@ -181,6 +173,12 @@ static int set_nonblock(int fd)
     return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
+static void sigchild_handler(int)
+{
+  while (waitpid(-1, NULL, WNOHANG) > 0)
+    ;
+}
+
 void tls_pipeline(const int clientfd, const int remotefd)
 {
   set_nonblock(clientfd);
@@ -198,6 +196,15 @@ void tls_pipeline(const int clientfd, const int remotefd)
   size_t c2s_len = 0, c2s_off = 0;
   size_t s2c_len = 0, s2c_off = 0;
   bool client_closed = false, remote_closed = false;
+
+  struct sigaction sa;
+  sa.sa_handler = sigchild_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_RESTART;
+  if (sigaction(SIGCHLD, &sa, NULL) == -1) {
+    perror("sigaction");
+    return;
+  }
   
   for (;;) {
     CLIENT.events = 0;
@@ -215,10 +222,8 @@ void tls_pipeline(const int clientfd, const int remotefd)
 
     if (poll(hosts, sizeof hosts / sizeof *hosts, -1) <= 0)
       break;
-    puts("poll");
     
     if (CLIENT.revents & POLLIN) {
-      puts("client pollin");
       const ssize_t nbytes = recv(clientfd, c2s + c2s_len, sizeof c2s - c2s_len, 0);
       if (nbytes == 0) {
         client_closed = true;
@@ -229,10 +234,7 @@ void tls_pipeline(const int clientfd, const int remotefd)
         break;
     }
     if (!remote_closed && (SERVER.revents & POLLOUT)) {
-      puts("server pollout");
       const ssize_t nbytes = send(remotefd, c2s + c2s_off, c2s_len - c2s_off, MSG_NOSIGNAL);
-      // printf("C→S: %zd | %s\n", nbytes, c2s + c2s_off);
-      printf("C→S: %zd\n", nbytes);
       if (nbytes > 0) {
         c2s_off += nbytes;
         if (c2s_off == c2s_len)
@@ -241,7 +243,6 @@ void tls_pipeline(const int clientfd, const int remotefd)
         break;
     }
     if (SERVER.revents & POLLIN) {
-      puts("server pollin");
       const ssize_t nbytes = recv(remotefd, s2c + s2c_len, sizeof s2c - s2c_len, 0);
       if (nbytes == 0) {
         remote_closed = true;
@@ -252,9 +253,7 @@ void tls_pipeline(const int clientfd, const int remotefd)
         break;
     }
     if (!client_closed && (CLIENT.revents & POLLOUT)) {
-      puts("client pollout");
       const ssize_t nbytes = send(clientfd, s2c + s2c_off, s2c_len - s2c_off, MSG_NOSIGNAL);
-      printf("S→C: %zd\n", nbytes);
       if (nbytes > 0) {
         s2c_off += nbytes;
         if (s2c_off == s2c_len)
@@ -298,7 +297,6 @@ int accept_client(const int sockfd)
       close(clientfd);
       return -1;
     }
-    printf("Got connection from %s with descriptor %d\n", ipstr, clientfd);
 
     return clientfd;
 }

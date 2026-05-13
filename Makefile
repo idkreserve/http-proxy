@@ -7,7 +7,7 @@ override CFLAGS += $(COMMONINC)
 
 NODEPS = clean
 
-CSRC = $(addprefix src/, parser.c pollfd_set.c proxy.c utils.c panic.c)
+CSRC = $(addprefix src/, parser.c proxy.c utils.c panic.c)
 COBJ := $(addprefix $(OUT_O_DIR)/, $(CSRC:.c=.o))
 DEPS = $(COBJ:.o=.d)
 
