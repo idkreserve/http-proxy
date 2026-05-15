@@ -43,8 +43,8 @@ int main(void)
     panic(PANIC_EXIT | PANIC_PERROR, 1, "bind_to_first_success");
   if (listen(sockfd, BACKLOG) == -1)
     panic(PANIC_EXIT | PANIC_PERROR, 1, "listen");
-  freeaddrinfo(serverinfo);
-  
+  freeaddrinfo(serverinfo);  
+
   for (;;) {
     const int clientfd = accept_client(sockfd);
     
@@ -60,50 +60,51 @@ int main(void)
   return 0;
 }
 
-int get_connection(struct transfer *tr, const int sockfd)
+int get_connection(struct http *tr, const int sockfd)
 {
   #define HTTPS_FLAG "CONNECT"
   #define HTTPS_FLAG_LEN 7
 
-  char buf[CONNSIZE];
+  char buf[CONNSIZE > sizeof (tr->host) ? CONNSIZE : sizeof (tr->host)];
   const size_t len = gethttpline(sockfd, buf, sizeof buf);
 
   if (len == 0)
     return CONN_UNDEFINED;
   
+  size_t i = 0, j = 0;
   /* HTTPS */
-  if (strstr(buf, HTTPS_FLAG) == buf && len > HTTPS_FLAG_LEN) {
-    char *https_data = buf + HTTPS_FLAG_LEN;
-    while (isspace(*https_data))
-      https_data++;
-
-    size_t i;
-
+  if (strstr(buf + i, HTTPS_FLAG) == buf && len > HTTPS_FLAG_LEN) {
+    i += HTTPS_FLAG_LEN;
+    
+    while (i < sizeof buf && isspace(buf[i]))
+      i++;
+    
     /* Find hostname */
-    for (i = 0; i < sizeof tr->host - 1; i++) {
-      if (*https_data == ':')
+    while (i < sizeof buf && j < sizeof tr->host - 1) {
+      if (buf[i] == ':')
         break;
-      if (*https_data == '\0')
-        goto undefined;
-      tr->host[i] = *https_data++;
+      if (buf[i] == '\0')
+        return CONN_UNDEFINED;
+      tr->host[j++] = buf[i++];
     }
-    tr->host[i] = '\0';
+    tr->host[j] = '\0';
     
     /* Find port */
-    if (*https_data != ':')
-      goto undefined;
-    https_data++;
-    for (i = 0; i < sizeof tr->port - 1 && !isspace(*https_data); i++)
-      tr->port[i] = *https_data++;
-    tr->port[i] = '\0';
+    if (buf[i] != ':')
+      return CONN_UNDEFINED;
+    i++;
+    for (j = 0; i < sizeof buf && j < sizeof tr->port - 1 && !isspace(buf[i]); i++, j++)
+      tr->port[j] = buf[i];
+    tr->port[j] = '\0';
     if (*tr->port == '\0') 
-      goto undefined;
+      return CONN_UNDEFINED;
     tr->type = CONN_HTTPS;
-
-    char end[2] = {'\0', '\0'};
-    size_t len;
+    tr->method[0] = '\0';
 
     /* Skip remaining lines */
+    char end[] = {'\0', '\0'};
+    size_t len;
+
     while ((len = gethttpline(sockfd, buf, sizeof buf)) > 2) {
       if (buf[len-2] == '\r' && buf[len-1] == '\n' && end[0] == '\r' && end[1] == '\n')
         break;
@@ -111,13 +112,47 @@ int get_connection(struct transfer *tr, const int sockfd)
       end[1] = buf[len-1];
     }
     if (len != 2) {
-      goto undefined;
+      return CONN_UNDEFINED;
     }
     return CONN_HTTPS;
   }
 
-  undefined:
-  return CONN_UNDEFINED;
+  /* HTTP */
+  i = 0, j = 0;
+
+  while (isspace(buf[i]))
+    i++;
+  
+  /* Find HTTP method */
+  while (i < sizeof buf && j < sizeof tr->method - 1 && !isspace(buf[i]))
+    tr->method[j++] = buf[i++];
+  tr->method[j] = '\0';
+  
+  if (!isspace(buf[i]))
+    return CONN_UNDEFINED;
+  i++;
+  
+  /* Skipping protocol */
+  for (; i < sizeof tr->host - 1; i++) {
+    if (buf[i] == '/' && buf[i+1] == '/') {
+      i += 2;
+      break;
+    }
+  }
+  
+  /* Find hostname */
+  for (j = 0; i < sizeof tr->host - 1 && !isspace(buf[i]) && buf[i] != '/'; i++, j++)
+    tr->host[j] = buf[i];
+  tr->host[j] = '\0';
+
+  if (!isspace(buf[i]) && buf[i] != '/')
+    return CONN_UNDEFINED;
+
+  tr->type = CONN_HTTP;
+  strcpy(tr->port, "http");
+  
+
+  return CONN_HTTP;
 
   #undef HTTPS_FLAG
   #undef HTTPS_FLAG_LEN
@@ -125,20 +160,20 @@ int get_connection(struct transfer *tr, const int sockfd)
 
 void handle_new_client(const int sockfd)
 {
-  struct transfer tr;
+  struct http tr;
 
   const int conn_type = get_connection(&tr, sockfd);
 
   if (conn_type == CONN_UNDEFINED)
     return;
-
   const struct addrinfo hints = {
     .ai_family = AF_UNSPEC,
     .ai_socktype = SOCK_STREAM,
   };
   struct addrinfo *remote_info;
   const int rv = getaddrinfo(tr.host, tr.port, &hints, &remote_info);
-  if (rv == -1) {
+  if (rv != 0) {
+    printf("HOST: [%s] %s\n", tr.host, tr.port);
     fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
     return;
   }
@@ -157,7 +192,8 @@ void handle_new_client(const int sockfd)
       tls_pipeline(sockfd, remotefd);
       break;
     case CONN_HTTP:
-      puts("HTTP");
+      printf("HTTP %s %s\n", tr.method, tr.host);
+      http_pipeline(sockfd, remotefd);
       break;
     case CONN_UNDEFINED:
       puts("UNDEFINED");
@@ -165,18 +201,10 @@ void handle_new_client(const int sockfd)
   }
 }
 
-static int set_nonblock(int fd)
+void http_pipeline(const int clientfd, const int remotefd)
 {
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1)
-      return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
-static void sigchild_handler(int)
-{
-  while (waitpid(-1, NULL, WNOHANG) > 0)
-    ;
+  set_nonblock(clientfd);
+  set_nonblock(remotefd);
 }
 
 void tls_pipeline(const int clientfd, const int remotefd)
@@ -190,7 +218,6 @@ void tls_pipeline(const int clientfd, const int remotefd)
   };
   #define CLIENT hosts[0]
   #define SERVER hosts[1]
-  #define BUFSIZE CONNSIZE
 
   char c2s[BUFSIZE], s2c[BUFSIZE];
   size_t c2s_len = 0, c2s_off = 0;
@@ -272,7 +299,6 @@ void tls_pipeline(const int clientfd, const int remotefd)
 
   #undef CLIENT
   #undef SERVER
-  #undef BUFSIZE
 }
 
 int accept_client(const int sockfd)
@@ -282,7 +308,7 @@ int accept_client(const int sockfd)
 
     const int clientfd = accept(sockfd, (struct sockaddr *) &their_addr, &their_size);
     if (clientfd == -1) {
-      perror("listen");
+      perror("accept");
       return -1;
     }
 
@@ -299,4 +325,18 @@ int accept_client(const int sockfd)
     }
 
     return clientfd;
+}
+
+static int set_nonblock(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1)
+      return -1;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
+
+static void sigchild_handler(int)
+{
+  while (waitpid(-1, NULL, WNOHANG) > 0)
+    ;
 }
