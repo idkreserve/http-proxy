@@ -15,15 +15,15 @@
 #include <poll.h>
 #include <signal.h>
 #include <sys/wait.h>
+#include "pipeline.h"
 #include "proxy.h"
+#include "http.h"
+#include "types.h"
+#include "net.h"
 #include "panic.h"
-#include "utils.h"
 
 #define PORT "8888"
 #define BACKLOG 10
-
-static int set_nonblock(int fd);
-static void sigchild_handler(int s);
 
 int main(void)
 {
@@ -58,104 +58,6 @@ int main(void)
   }
 
   return 0;
-}
-
-int get_connection(struct http *tr, const int sockfd)
-{
-  #define HTTPS_FLAG "CONNECT"
-  #define HTTPS_FLAG_LEN 7
-
-  char buf[CONNSIZE > sizeof (tr->host) ? CONNSIZE : sizeof (tr->host)];
-  const size_t len = gethttpline(sockfd, buf, sizeof buf);
-
-  if (len == 0)
-    return CONN_UNDEFINED;
-  
-  size_t i = 0, j = 0;
-  /* HTTPS */
-  if (strstr(buf + i, HTTPS_FLAG) == buf && len > HTTPS_FLAG_LEN) {
-    i += HTTPS_FLAG_LEN;
-    
-    while (i < sizeof buf && isspace(buf[i]))
-      i++;
-    
-    /* Find hostname */
-    while (i < sizeof buf && j < sizeof tr->host - 1) {
-      if (buf[i] == ':')
-        break;
-      if (buf[i] == '\0')
-        return CONN_UNDEFINED;
-      tr->host[j++] = buf[i++];
-    }
-    tr->host[j] = '\0';
-    
-    /* Find port */
-    if (buf[i] != ':')
-      return CONN_UNDEFINED;
-    i++;
-    for (j = 0; i < sizeof buf && j < sizeof tr->port - 1 && !isspace(buf[i]); i++, j++)
-      tr->port[j] = buf[i];
-    tr->port[j] = '\0';
-    if (*tr->port == '\0') 
-      return CONN_UNDEFINED;
-    tr->type = CONN_HTTPS;
-    tr->method[0] = '\0';
-
-    /* Skip remaining lines */
-    char end[] = {'\0', '\0'};
-    size_t len;
-
-    while ((len = gethttpline(sockfd, buf, sizeof buf)) > 2) {
-      if (buf[len-2] == '\r' && buf[len-1] == '\n' && end[0] == '\r' && end[1] == '\n')
-        break;
-      end[0] = buf[len-2];
-      end[1] = buf[len-1];
-    }
-    if (len != 2) {
-      return CONN_UNDEFINED;
-    }
-    return CONN_HTTPS;
-  }
-
-  /* HTTP */
-  i = 0, j = 0;
-
-  while (isspace(buf[i]))
-    i++;
-  
-  /* Find HTTP method */
-  while (i < sizeof buf && j < sizeof tr->method - 1 && !isspace(buf[i]))
-    tr->method[j++] = buf[i++];
-  tr->method[j] = '\0';
-  
-  if (!isspace(buf[i]))
-    return CONN_UNDEFINED;
-  i++;
-  
-  /* Skipping protocol */
-  for (; i < sizeof tr->host - 1; i++) {
-    if (buf[i] == '/' && buf[i+1] == '/') {
-      i += 2;
-      break;
-    }
-  }
-  
-  /* Find hostname */
-  for (j = 0; i < sizeof tr->host - 1 && !isspace(buf[i]) && buf[i] != '/'; i++, j++)
-    tr->host[j] = buf[i];
-  tr->host[j] = '\0';
-
-  if (!isspace(buf[i]) && buf[i] != '/')
-    return CONN_UNDEFINED;
-
-  tr->type = CONN_HTTP;
-  strcpy(tr->port, "http");
-  
-
-  return CONN_HTTP;
-
-  #undef HTTPS_FLAG
-  #undef HTTPS_FLAG_LEN
 }
 
 void handle_new_client(const int sockfd)
@@ -201,142 +103,3 @@ void handle_new_client(const int sockfd)
   }
 }
 
-void http_pipeline(const int clientfd, const int remotefd)
-{
-  set_nonblock(clientfd);
-  set_nonblock(remotefd);
-}
-
-void tls_pipeline(const int clientfd, const int remotefd)
-{
-  set_nonblock(clientfd);
-  set_nonblock(remotefd);
-
-  struct pollfd hosts[] = {
-    {.fd = clientfd},
-    {.fd = remotefd},
-  };
-  #define CLIENT hosts[0]
-  #define SERVER hosts[1]
-
-  char c2s[BUFSIZE], s2c[BUFSIZE];
-  size_t c2s_len = 0, c2s_off = 0;
-  size_t s2c_len = 0, s2c_off = 0;
-  bool client_closed = false, remote_closed = false;
-
-  struct sigaction sa;
-  sa.sa_handler = sigchild_handler;
-  sigemptyset(&sa.sa_mask);
-  sa.sa_flags = SA_RESTART;
-  if (sigaction(SIGCHLD, &sa, NULL) == -1) {
-    perror("sigaction");
-    return;
-  }
-  
-  for (;;) {
-    CLIENT.events = 0;
-    SERVER.events = 0;
-
-    if (!client_closed && c2s_len < sizeof c2s)
-      CLIENT.events |= POLLIN;
-    if (!remote_closed && s2c_len < sizeof s2c)
-      SERVER.events |= POLLIN;
-
-    if (c2s_off < c2s_len)
-      SERVER.events |= POLLOUT;
-    if (s2c_off < s2c_len)
-      CLIENT.events |= POLLOUT;
-
-    if (poll(hosts, sizeof hosts / sizeof *hosts, -1) <= 0)
-      break;
-    
-    if (CLIENT.revents & POLLIN) {
-      const ssize_t nbytes = recv(clientfd, c2s + c2s_len, sizeof c2s - c2s_len, 0);
-      if (nbytes == 0) {
-        client_closed = true;
-        shutdown(remotefd, SHUT_WR);
-      } else if (nbytes > 0)
-        c2s_len += nbytes;
-      else if (errno != EAGAIN && errno != EWOULDBLOCK)
-        break;
-    }
-    if (!remote_closed && (SERVER.revents & POLLOUT)) {
-      const ssize_t nbytes = send(remotefd, c2s + c2s_off, c2s_len - c2s_off, MSG_NOSIGNAL);
-      if (nbytes > 0) {
-        c2s_off += nbytes;
-        if (c2s_off == c2s_len)
-          c2s_off = c2s_len = 0;
-      } else if (nbytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-        break;
-    }
-    if (SERVER.revents & POLLIN) {
-      const ssize_t nbytes = recv(remotefd, s2c + s2c_len, sizeof s2c - s2c_len, 0);
-      if (nbytes == 0) {
-        remote_closed = true;
-        shutdown(clientfd, SHUT_WR);
-      } else if (nbytes > 0)
-        s2c_len += nbytes;
-      else if (errno != EAGAIN && errno != EWOULDBLOCK)
-        break;
-    }
-    if (!client_closed && (CLIENT.revents & POLLOUT)) {
-      const ssize_t nbytes = send(clientfd, s2c + s2c_off, s2c_len - s2c_off, MSG_NOSIGNAL);
-      if (nbytes > 0) {
-        s2c_off += nbytes;
-        if (s2c_off == s2c_len)
-          s2c_off = s2c_len = 0;
-      } else if (nbytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
-        break;
-    }
-
-    if (client_closed && remote_closed && c2s_len == 0 && s2c_len == 0)
-      break;
-    if (CLIENT.revents & POLLERR)
-      break;
-    if (SERVER.revents & POLLERR)
-      break;
-  }
-
-  #undef CLIENT
-  #undef SERVER
-}
-
-int accept_client(const int sockfd)
-{
-  struct sockaddr_storage their_addr;
-  socklen_t their_size = sizeof their_addr;
-
-    const int clientfd = accept(sockfd, (struct sockaddr *) &their_addr, &their_size);
-    if (clientfd == -1) {
-      perror("accept");
-      return -1;
-    }
-
-    char ipstr[INET6_ADDRSTRLEN];
-    if(inet_ntop(
-      their_addr.ss_family,
-      get_in_addr((struct sockaddr *) &their_addr),
-      ipstr,
-      sizeof ipstr
-    ) == NULL) {
-      perror("inet_ntop");
-      close(clientfd);
-      return -1;
-    }
-
-    return clientfd;
-}
-
-static int set_nonblock(int fd)
-{
-    int flags = fcntl(fd, F_GETFL, 0);
-    if (flags == -1)
-      return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
-static void sigchild_handler(int)
-{
-  while (waitpid(-1, NULL, WNOHANG) > 0)
-    ;
-}

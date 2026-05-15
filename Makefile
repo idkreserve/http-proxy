@@ -1,14 +1,23 @@
 CFLAGS ?= -O2 -std=gnu17 -Wall -Wextra
 OUT_O_DIR = build
 
-COMMONINC = -I include
+COMMONINC = $(addprefix -I src/, include http/include net/include utils/include)
 
 override CFLAGS += $(COMMONINC)
 
 NODEPS = clean
 
-CSRC = $(addprefix src/, parser.c proxy.c utils.c panic.c)
-COBJ := $(addprefix $(OUT_O_DIR)/, $(CSRC:.c=.o))
+CSRC_HTTP = $(addprefix http/, \
+	http.c)
+CSRC_NET = $(addprefix net/, \
+	net.c \
+	pipeline.c)
+CSRC_UTILS = $(addprefix utils/, \
+	panic.c \
+	utils.c)
+
+CSRC = $(addprefix src/, proxy.c $(CSRC_HTTP) $(CSRC_NET) $(CSRC_UTILS))
+COBJ = $(addprefix $(OUT_O_DIR)/, $(CSRC:.c=.o))
 DEPS = $(COBJ:.o=.d)
 
 .PHONY: all
@@ -34,10 +43,9 @@ run: all
 	@echo server started
 	@$(OUT_O_DIR)/proxy
 
-.PHONY: debug
-debug: clean all
-	@gdb -silent $(OUT_O_DIR)/proxy
-
 .PHONY: clean
 clean:
 	rm -rf $(OUT_O_DIR) *.x
+
+.PHONY: iwyu
+iwyu:

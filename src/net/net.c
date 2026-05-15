@@ -1,10 +1,44 @@
-#include <stdio.h>
-#include <string.h>
-#include <stddef.h>
-#include <netinet/in.h>
 #include <netdb.h>
+#include <fcntl.h>
+#include <stdio.h>
+#include <arpa/inet.h>
 #include <unistd.h>
-#include "utils.h"
+#include "stddef.h"
+#include "net.h"
+
+int accept_client(const int sockfd)
+{
+  struct sockaddr_storage their_addr;
+  socklen_t their_size = sizeof their_addr;
+
+    const int clientfd = accept(sockfd, (struct sockaddr *) &their_addr, &their_size);
+    if (clientfd == -1) {
+      perror("accept");
+      return -1;
+    }
+
+    char ipstr[INET6_ADDRSTRLEN];
+    if(inet_ntop(
+      their_addr.ss_family,
+      get_in_addr((struct sockaddr *) &their_addr),
+      ipstr,
+      sizeof ipstr
+    ) == NULL) {
+      perror("inet_ntop");
+      close(clientfd);
+      return -1;
+    }
+
+    return clientfd;
+}
+
+int set_nonblock(int fd)
+{
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1)
+      return -1;
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+}
 
 int sendall(int sockfd, const void *buf, size_t *len)
 {
@@ -71,25 +105,4 @@ void *get_in_addr(struct sockaddr *sa)
   if (sa->sa_family == AF_INET)
     return (struct sockaddr_in *) sa;
   return (struct sockaddr_in6 *) sa;
-}
-
-size_t gethttpline(const int sockfd, char *s, size_t n)
-{
-  if (n <= 4)
-    return 0;
-
-  size_t i;
-  for (i = 0; i < n - 1 && recv(sockfd, s, 1, 0) > 0 && *s != '\r'; i++)
-    s++;
-  if (*s == '\r')
-    i++;
-
-  char next;
-  if (n - 1 - i > 1 && recv(sockfd, &next, 1, 0) == 1 && next == '\n') {
-    *s++ = '\n';
-    i++;
-  }
-  *s = '\0';
-
-  return i;
 }
