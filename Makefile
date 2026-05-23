@@ -1,4 +1,4 @@
-CFLAGS ?= -O2 -std=gnu17 -Wall -Wextra
+CFLAGS ?= -O2 -std=gnu17 -Wall -Wextra -Werror
 OUT_O_DIR = build
 
 COMMONINC = $(addprefix -I src/, include http/include net/include utils/include)
@@ -46,6 +46,3 @@ run: all
 .PHONY: clean
 clean:
 	rm -rf $(OUT_O_DIR) *.x
-
-.PHONY: iwyu
-iwyu:

@@ -1,20 +1,7 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <ctype.h>
 #include <stddef.h>
-#include <string.h>
-#include <stdbool.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <netdb.h>
 #include <unistd.h>
-#include <poll.h>
-#include <signal.h>
-#include <sys/wait.h>
+#include <string.h>
 #include "pipeline.h"
 #include "proxy.h"
 #include "http.h"
@@ -43,19 +30,23 @@ int main(void)
     panic(PANIC_EXIT | PANIC_PERROR, 1, "bind_to_first_success");
   if (listen(sockfd, BACKLOG) == -1)
     panic(PANIC_EXIT | PANIC_PERROR, 1, "listen");
-  freeaddrinfo(serverinfo);  
+  freeaddrinfo(serverinfo);
 
-  for (;;) {
-    const int clientfd = accept_client(sockfd);
+  const int clientfd = accept_client(sockfd);
+  if (clientfd != -1)
+    handle_new_client(clientfd);
+
+  // for (;;) {
+  //   const int clientfd = accept_client(sockfd);
     
-    if (clientfd == -1)
-      continue;
-    if (fork() == 0) {
-      handle_new_client(clientfd);
-      return 0;
-    }
-    close(clientfd);
-  }
+  //   if (clientfd == -1)
+  //     continue;
+  //   if (fork() == 0) {
+  //     handle_new_client(clientfd);
+  //     return 0;
+  //   }
+  //   close(clientfd);
+  // }
 
   return 0;
 }
@@ -87,15 +78,12 @@ void handle_new_client(const int sockfd)
   
   switch (conn_type) {
     case CONN_HTTPS:
-      printf("HTTPS %s %s\n", tr.host, tr.port);
-      const char *response = "HTTP/1.1 200 Connection Established\r\n\r\n";
-      size_t len = strlen(response);
-      sendall(sockfd, response, &len);
-      tls_pipeline(sockfd, remotefd);
+      dprintf(sockfd, "%s Connection Established\r\n\r\n", tr.version);
+      pipeline(sockfd, remotefd);
       break;
     case CONN_HTTP:
       printf("HTTP %s %s\n", tr.method, tr.host);
-      http_pipeline(sockfd, remotefd);
+      // http_pipeline(sockfd, remotefd, &tr);
       break;
     case CONN_UNDEFINED:
       puts("UNDEFINED");

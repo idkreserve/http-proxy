@@ -7,16 +7,10 @@
 #include <stdio.h>
 #include "net.h"
 #include "utils.h"
-#include "types.h"
+#include "http.h"
 #include "pipeline.h"
 
-void http_pipeline(const int clientfd, const int remotefd)
-{
-  set_nonblock(clientfd);
-  set_nonblock(remotefd);
-}
-
-void tls_pipeline(const int clientfd, const int remotefd)
+void pipeline(const int clientfd, const int remotefd)
 {
   set_nonblock(clientfd);
   set_nonblock(remotefd);
