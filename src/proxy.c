@@ -32,21 +32,17 @@ int main(void)
     panic(PANIC_EXIT | PANIC_PERROR, 1, "listen");
   freeaddrinfo(serverinfo);
 
-  const int clientfd = accept_client(sockfd);
-  if (clientfd != -1)
-    handle_new_client(clientfd);
-
-  // for (;;) {
-  //   const int clientfd = accept_client(sockfd);
+  for (;;) {
+    const int clientfd = accept_client(sockfd);
     
-  //   if (clientfd == -1)
-  //     continue;
-  //   if (fork() == 0) {
-  //     handle_new_client(clientfd);
-  //     return 0;
-  //   }
-  //   close(clientfd);
-  // }
+    if (clientfd == -1)
+      continue;
+    if (fork() == 0) {
+      handle_new_client(clientfd);
+      return 0;
+    }
+    close(clientfd);
+  }
 
   return 0;
 }
@@ -78,12 +74,21 @@ void handle_new_client(const int sockfd)
   
   switch (conn_type) {
     case CONN_HTTPS:
-      dprintf(sockfd, "%s Connection Established\r\n\r\n", tr.version);
-      pipeline(sockfd, remotefd);
+      dprintf(sockfd, "%s 200 Connection Established\r\n\r\n", tr.version);
+      pipeline(sockfd, remotefd, NULL, 0);
       break;
     case CONN_HTTP:
-      printf("HTTP %s %s\n", tr.method, tr.host);
-      // http_pipeline(sockfd, remotefd, &tr);
+      dprintf(remotefd, "%s %s %s\r\n", tr.method, tr.path, tr.version);
+
+      char *append = NULL;
+      size_t appendlen = 0;
+      char *ptr = memmem(tr.meta.buf, tr.meta.len, "\r\n", 2);
+
+      if (ptr + 2 < tr.meta.buf + tr.meta.len) {
+        append = ptr + 2;
+        appendlen = tr.meta.len - (ptr - tr.meta.buf + 2);
+      }
+      pipeline(sockfd, remotefd, append, appendlen);
       break;
     case CONN_UNDEFINED:
       puts("UNDEFINED");

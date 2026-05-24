@@ -1,16 +1,17 @@
-#include <poll.h>
-#include <signal.h>
+#include <stdio.h>
+#include <string.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <errno.h>
+#include <signal.h>
+#include <poll.h>
 #include <sys/socket.h>
-#include <stdio.h>
 #include "net.h"
 #include "utils.h"
 #include "http.h"
 #include "pipeline.h"
 
-void pipeline(const int clientfd, const int remotefd)
+void pipeline(const int clientfd, const int remotefd, const char *c2s_append, const size_t c2s_appendlen)
 {
   set_nonblock(clientfd);
   set_nonblock(remotefd);
@@ -34,6 +35,11 @@ void pipeline(const int clientfd, const int remotefd)
   if (sigaction(SIGCHLD, &sa, NULL) == -1) {
     perror("sigaction");
     return;
+  }
+
+  if (c2s_append != NULL && c2s_appendlen <= sizeof c2s) {
+    memcpy(c2s, c2s_append, c2s_appendlen);
+    c2s_len = c2s_appendlen;
   }
   
   for (;;) {

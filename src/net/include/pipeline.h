@@ -3,7 +3,6 @@
 
 #include "http.h"
 
-void pipeline(const int clientfd, const int remotefd);
-void http_pipeline(const int clientfd, const int remotefd, struct http *tr);
+void pipeline(const int clientfd, const int remotefd, const char *c2s_append, const size_t c2s_appendlen);
 
 #endif

@@ -7,7 +7,7 @@
 
 struct metainf {
   char buf[BUFSIZE];
-  size_t off;
+  size_t len;
 };
 
 struct http {
