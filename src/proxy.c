@@ -95,7 +95,6 @@ void handle_new_client(const int sockfd)
   struct addrinfo *remote_info;
   const int rv = getaddrinfo(tr.host, tr.port, &hints, &remote_info);
   if (rv != 0) {
-    printf("HOST: [%s] %s\n", tr.host, tr.port);
     fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
     return;
   }
