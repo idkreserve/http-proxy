@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <sys/socket.h>
 #include "http.h"
+#include "hash.h"
 
 static int skiphttpsresponse(struct metainf *m, const int sockfd);
 
@@ -61,6 +62,35 @@ int get_connection(struct http *tr, const int sockfd)
   m->buf[len] = tmp;
   
   return tr->type;
+}
+
+int load_blacklist(FILE *fp, size_t *nline)
+{
+  char buf[HOSTSIZE];
+  int n;
+
+  *nline = 0;
+
+  while ((n = fscanf(fp, "%256s", buf)) != EOF && n == 1) {
+    char *s = normalize(buf, strlen(buf));
+    if (lookup(s) == NULL && install(s) == NULL)
+      return -1;
+    nline++;
+  }
+  if (n != EOF)
+    return -1;
+  return 0;
+}
+
+char *normalize(char *s, const size_t len)
+{
+  if (strncmp(s, "https://", 8) == 0 && len > 8)
+    s += 8;
+  else if (strncmp(s, "http://", 7) == 0 && len > 7)
+    s += 7;
+  if (strncmp(s, "www.", 4) == 0 && len > 4)
+    s += 4;
+  return s;
 }
 
 static int skiphttpsresponse(struct metainf *m, const int sockfd)

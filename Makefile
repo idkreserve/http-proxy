@@ -1,7 +1,7 @@
 CFLAGS ?= -O2 -std=gnu17 -Wall -Wextra -Werror
 OUT_O_DIR = build
 
-COMMONINC = $(addprefix -I src/, include http/include net/include utils/include)
+COMMONINC = $(addprefix -I src/, include http/include net/include utils/include hash/include)
 
 override CFLAGS += $(COMMONINC)
 
@@ -15,8 +15,10 @@ CSRC_NET = $(addprefix net/, \
 CSRC_UTILS = $(addprefix utils/, \
 	panic.c \
 	utils.c)
+CSRC_HASH = $(addprefix hash/, \
+	hash.c)
 
-CSRC = $(addprefix src/, proxy.c $(CSRC_HTTP) $(CSRC_NET) $(CSRC_UTILS))
+CSRC = $(addprefix src/, proxy.c $(CSRC_HTTP) $(CSRC_NET) $(CSRC_UTILS) $(CSRC_HASH))
 COBJ = $(addprefix $(OUT_O_DIR)/, $(CSRC:.c=.o))
 DEPS = $(COBJ:.o=.d)
 

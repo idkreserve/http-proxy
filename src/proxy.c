@@ -8,12 +8,23 @@
 #include "types.h"
 #include "net.h"
 #include "panic.h"
+#include "hash.h"
 
 #define PORT "8888"
 #define BACKLOG 10
 
-int main(void)
+int main(int argc, char **argv)
 {
+  if (argc > 1) {
+    FILE *fp = fopen(argv[1], "r");
+    size_t nline;
+
+    if (fp == NULL)
+      panic(PANIC_PERROR | PANIC_EXIT, 1, "fopen");
+    if (load_blacklist(fp, &nline) == -1)
+      panic(PANIC_EXIT, 1, "Error in line %lu while parsing %s\n", nline, argv[1]);
+  }
+
   const struct addrinfo hints = {
     .ai_family = AF_UNSPEC,
     .ai_socktype = SOCK_STREAM,
@@ -55,6 +66,28 @@ void handle_new_client(const int sockfd)
 
   if (conn_type == CONN_UNDEFINED)
     return;
+
+  if (lookup(normalize(tr.host, sizeof tr.host)) != NULL) {
+    const char body[] =
+      "<html>"
+      "<body>"
+      "<h1>403 This host is forbidden</h1>"
+      "<p>Access denied.</p>"
+      "</body>"
+      "</html>";
+    dprintf(sockfd,
+      "%s 403 Forbidden\r\n"
+      "Content-Type: text/html; charset=utf-8\r\n"
+      "Content-Length: %lu\r\n"
+      "Connection: close\r\n"
+      "\r\n"
+      "%s",
+      tr.version,
+      strlen(body),
+      body);
+    return;
+  }
+
   const struct addrinfo hints = {
     .ai_family = AF_UNSPEC,
     .ai_socktype = SOCK_STREAM,
